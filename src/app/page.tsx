@@ -14,9 +14,15 @@ import Board from '@/components/Board';
 // ---------------------------------------------------------------------------
 
 const PLAYER_COUNT = 4;
-const BOT_TURN_DELAY = 600;
-const BOT_CLAIM_DELAY = 400;
-const NO_CLAIM_DELAY = 300;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Returns a random delay in ms between min and max (inclusive). */
+function randomDelay(min: number, max: number): number {
+  return Math.floor(min + Math.random() * (max - min + 1));
+}
 
 // ---------------------------------------------------------------------------
 // Page
@@ -44,13 +50,15 @@ export default function Home() {
   }, [state.phase, state.currentPlayerIndex, state.players]);
 
   // ── Bot turn ──
-  // When a bot needs to act, give the UI time to render then dispatch.
+  // When a bot needs to act, add a randomised delay (880–1540 ms) so each
+  // bot turn feels like a separate draw-think-discard moment.
   useEffect(() => {
     if (state.phase !== 'botTurn') return;
 
+    const delay = randomDelay(880, 1540);
     const id = setTimeout(() => {
       dispatch({ type: 'BOT_TAKE_TURN' });
-    }, BOT_TURN_DELAY);
+    }, delay);
 
     return () => clearTimeout(id);
   }, [state.phase, state.currentPlayerIndex]);
@@ -100,13 +108,14 @@ export default function Home() {
 
     if (bestClaim) {
       const claim = bestClaim;
+      const delay = randomDelay(660, 1100);
       const id = setTimeout(() => {
         dispatch({
           type: 'CLAIM_TILE',
           playerIndex: claim.playerIndex,
           option: claim.option,
         });
-      }, BOT_CLAIM_DELAY);
+      }, delay);
       return () => clearTimeout(id);
     }
 
@@ -124,9 +133,10 @@ export default function Home() {
     }
 
     // No one claims — advance to next player's draw
+    const delay = randomDelay(330, 550);
     const id = setTimeout(() => {
       dispatch({ type: 'DRAW_TILE' });
-    }, NO_CLAIM_DELAY);
+    }, delay);
 
     return () => clearTimeout(id);
   }, [state.phase, state.lastDiscard, state.lastDiscardPlayerIndex, state.players]);

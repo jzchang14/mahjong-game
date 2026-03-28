@@ -12,6 +12,7 @@ type ActionBarProps = {
   options: ClaimOption[];
   onAction: (option: ClaimOption) => void;
   onDiscard: () => void;
+  onPass?: () => void;
   canDiscard: boolean;
   selectedTile: TileType | null;
 };
@@ -43,6 +44,7 @@ export default function ActionBar({
   options,
   onAction,
   onDiscard,
+  onPass,
   canDiscard,
   selectedTile,
 }: ActionBarProps) {
@@ -72,6 +74,16 @@ export default function ActionBar({
           </button>
         );
       })}
+
+      {/* Pass button — decline all claims */}
+      {onPass && options.length > 0 && (
+        <button
+          onClick={onPass}
+          className="rounded-md bg-gray-600 px-4 py-2 text-sm font-bold text-gray-100 transition-colors hover:bg-gray-500"
+        >
+          過 Pass
+        </button>
+      )}
 
       {/* Discard button — only when it's the human's turn */}
       {canDiscard && (
