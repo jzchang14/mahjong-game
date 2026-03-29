@@ -31,10 +31,12 @@ function randomDelay(min: number, max: number): number {
 export default function Home() {
   const [state, dispatch] = useReducer(gameReducer, initialState);
 
-  // ── Deal on mount ──
+  // ── Deal whenever phase is 'dealing' (on mount + after NEXT_ROUND / RESET) ──
   useEffect(() => {
-    dispatch({ type: 'DEAL' });
-  }, []);
+    if (state.phase === 'dealing') {
+      dispatch({ type: 'DEAL' });
+    }
+  }, [state.phase]);
 
   // ── Flower replacement loop ──
   // Keep dispatching REPLACE_FLOWER while the phase stays 'replacingFlowers'.

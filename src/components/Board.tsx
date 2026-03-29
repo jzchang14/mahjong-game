@@ -13,6 +13,7 @@ import ActionBar from '@/components/ActionBar';
 import DiscardPile from '@/components/DiscardPile';
 import Hand from '@/components/Hand';
 import ScoreBoard from '@/components/ScoreBoard';
+import WinScreen from '@/components/WinScreen';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,11 +25,38 @@ type BoardProps = {
 };
 
 // ---------------------------------------------------------------------------
-// Constants
+// Layout constants
 // ---------------------------------------------------------------------------
 
 const HUMAN_IDX = 0;
 const PLAYER_COUNT = 4;
+
+/** Side length of the square center play area (px). */
+const PLAY_AREA_SIZE = 900;
+
+/** Center piece (wind + wall count) dimensions (px). */
+const CENTER_SIZE = 280;
+
+/** Gap between center piece edge and discard zone edge (px). */
+const CENTER_GAP = 4;
+
+/** Distance from board center to discard zone edge: half the center piece + gap. */
+const DISCARD_OFFSET = CENTER_SIZE / 2 + CENTER_GAP; // 144
+
+/** Outer decorative table border inset from viewport edges (px). */
+const OUTER_BORDER_INSET = 60;
+
+/** Claim countdown timer duration in seconds. */
+const CLAIM_TIMER_SECONDS = 8;
+
+/** SVG progress ring constants (inside CENTER_SIZE). */
+const RING_CENTER = CENTER_SIZE / 2; // 140
+const RING_RADIUS = 125;
+const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const WIND_LABEL: Record<Wind, string> = {
   east: '東',
@@ -38,17 +66,6 @@ const WIND_LABEL: Record<Wind, string> = {
 };
 
 const PLAYER_NAMES = ['You', 'Bot 1', 'Bot 2', 'Bot 3'];
-
-/** Claim countdown timer duration in seconds. */
-const CLAIM_TIMER_SECONDS = 8;
-
-/** SVG progress ring constants. */
-const RING_RADIUS = 35;
-const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
 
 const SUIT_ORDER: Record<string, number> = {
   bamboo: 0,
@@ -65,15 +82,11 @@ const HONOR_ORDER: Record<string, number> = {
   white: 6,
 };
 
-/**
- * Sorts tiles for display: suits (bamboo → dots → characters, by rank),
- * then honors (winds E/S/W/N, dragons R/G/W), then flowers.
- */
 function sortTiles(tiles: readonly TileType[]): TileType[] {
   function tileKey(t: TileType): number {
     if (t.kind === 'suit') return SUIT_ORDER[t.suit] * 10 + t.rank;
     if (t.kind === 'honor') return 100 + (HONOR_ORDER[t.honor] ?? 0);
-    return 200; // flowers last
+    return 200;
   }
   return [...tiles].sort((a, b) => tileKey(a) - tileKey(b));
 }
@@ -82,13 +95,10 @@ function sortTiles(tiles: readonly TileType[]): TileType[] {
 // Sub-components
 // ---------------------------------------------------------------------------
 
-/** Small pill showing player name + seat wind character. */
 function Nameplate({ name, wind }: { name: string; wind: Wind }) {
   return (
     <div className="rounded-full bg-gray-900/60 px-3 py-0.5 text-xs font-medium text-gray-300 backdrop-blur-sm">
-      <span className="mr-1 font-bold text-amber-400">
-        {WIND_LABEL[wind]}
-      </span>
+      <span className="mr-1 font-bold text-amber-400">{WIND_LABEL[wind]}</span>
       {name}
     </div>
   );
@@ -101,10 +111,7 @@ function Nameplate({ name, wind }: { name: string; wind: Wind }) {
 export default function Board({ state, onAction }: BoardProps) {
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
 
-  // ── Discard history tracking ──
-  // The reducer only stores lastDiscard / lastDiscardPlayerIndex (no history).
-  // We accumulate discards here and remove claimed tiles by detecting meld
-  // count changes when lastDiscard disappears.
+  // ── Discard history ──
   const [discardHistory, setDiscardHistory] = useState<
     { tile: TileType; playerIndex: number }[]
   >([]);
@@ -112,24 +119,36 @@ export default function Board({ state, onAction }: BoardProps) {
   const prevMeldCountRef = useRef<number>(0);
 
   // ── Tenpai discard tracking ──
-  // Track which discard IDs were made while the discarding player was tenpai.
-  // Keyed by player index → Set of discard tile IDs.
   const [tenpaiDiscardIds, setTenpaiDiscardIds] = useState<
     [Set<number>, Set<number>, Set<number>, Set<number>]
   >([new Set(), new Set(), new Set(), new Set()]);
 
+  // ── Persistent last-discard arrow ID ──
+  // Does NOT reset when phase changes — only updates on next actual discard.
+  const [stableLastDiscardId, setStableLastDiscardId] = useState<number | null>(null);
+
   // ── Claim countdown timer ──
   const [claimTimer, setClaimTimer] = useState(CLAIM_TIMER_SECONDS);
+
+  // ── Viewport size for SVG lane markings ──
+  const [vpW, setVpW] = useState(0);
+  const [vpH, setVpH] = useState(0);
+  useEffect(() => {
+    const update = () => {
+      setVpW(window.innerWidth);
+      setVpH(window.innerHeight);
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
 
   const human = state.players[HUMAN_IDX];
 
   // ── Auto-sorted human hand ──
-  const sortedHumanHand = useMemo(
-    () => sortTiles(human.hand),
-    [human.hand],
-  );
+  const sortedHumanHand = useMemo(() => sortTiles(human.hand), [human.hand]);
 
-  // Reset selection when phase, active player, or hand contents change
+  // Reset selection on phase / player / hand change
   useEffect(() => {
     setSelectedIndex(null);
   }, [state.phase, state.currentPlayerIndex, sortedHumanHand]);
@@ -142,7 +161,6 @@ export default function Board({ state, onAction }: BoardProps) {
       0,
     );
 
-    // A new discard appeared → append to history + check tenpai
     if (currId !== null && currId !== prevDiscardIdRef.current) {
       const pi = state.lastDiscardPlayerIndex!;
       const discardTile = state.lastDiscard!;
@@ -152,7 +170,10 @@ export default function Board({ state, onAction }: BoardProps) {
         { tile: discardTile, playerIndex: pi },
       ]);
 
-      // Check if the discarding player is now tenpai (shanten 0 after discard)
+      // Persist for arrow (never clears on phase change — only on next discard)
+      setStableLastDiscardId(currId);
+
+      // Tenpai check
       const player = state.players[pi];
       const shanten = estimateShanten(player.hand, player.declaredMelds);
       if (shanten <= 0) {
@@ -164,7 +185,7 @@ export default function Board({ state, onAction }: BoardProps) {
       }
     }
 
-    // Discard disappeared AND meld count increased → tile was claimed
+    // Claimed tile — remove last history entry
     if (
       prevDiscardIdRef.current !== null &&
       currId === null &&
@@ -177,17 +198,18 @@ export default function Board({ state, onAction }: BoardProps) {
     prevMeldCountRef.current = totalMelds;
   }, [state.lastDiscard, state.lastDiscardPlayerIndex, state.players]);
 
-  // Clear discard history and tenpai tracking when a new round begins
+  // Clear all per-round state on new round
   useEffect(() => {
     if (state.phase === 'dealing') {
       setDiscardHistory([]);
       prevDiscardIdRef.current = null;
       prevMeldCountRef.current = 0;
       setTenpaiDiscardIds([new Set(), new Set(), new Set(), new Set()]);
+      setStableLastDiscardId(null);
     }
   }, [state.phase]);
 
-  // ── Claim timer: reset on new discard ──
+  // Claim timer: reset on new discard
   useEffect(() => {
     if (state.lastDiscard !== null) {
       setClaimTimer(CLAIM_TIMER_SECONDS);
@@ -199,9 +221,8 @@ export default function Board({ state, onAction }: BoardProps) {
   for (const entry of discardHistory) {
     playerDiscards[entry.playerIndex].push(entry.tile);
   }
-  const lastDiscardId = state.lastDiscard?.id ?? null;
 
-  // ── Derive claim options for the human player during awaitingClaims ──
+  // ── Claim options for human ──
   let claimOptions: ClaimOption[] = [];
   if (
     state.phase === 'awaitingClaims' &&
@@ -221,26 +242,21 @@ export default function Board({ state, onAction }: BoardProps) {
     ];
   }
 
-  // ── Claim timer: countdown during awaitingClaims (pause when human has options) ──
+  // Claim timer countdown (pauses while human has options)
   const humanHasClaimOptions = claimOptions.length > 0;
   useEffect(() => {
     if (state.phase !== 'awaitingClaims') return;
-    if (humanHasClaimOptions) return; // pause while human decides
+    if (humanHasClaimOptions) return;
 
     const id = setInterval(() => {
-      setClaimTimer((prev) => {
-        if (prev <= 1) return 0;
-        return prev - 1;
-      });
+      setClaimTimer((prev) => (prev <= 1 ? 0 : prev - 1));
     }, 1000);
-
     return () => clearInterval(id);
   }, [state.phase, humanHasClaimOptions]);
 
-  // ── UI-state helpers ──
+  // ── UI helpers ──
   const canDiscard =
     state.phase === 'playerTurn' && state.currentPlayerIndex === HUMAN_IDX;
-
   const isHumanTurn = canDiscard;
 
   const selectedTile =
@@ -248,10 +264,19 @@ export default function Board({ state, onAction }: BoardProps) {
       ? sortedHumanHand[selectedIndex]
       : null;
 
-  /** Whether the given player is the active player this turn. */
   const isActive = (pi: number) =>
     state.currentPlayerIndex === pi &&
     (state.phase === 'playerTurn' || state.phase === 'botTurn');
+
+
+  // ── SVG lane markings — derived from viewport + play area geometry ──
+  const half = PLAY_AREA_SIZE / 2;
+  const cx = vpW / 2;
+  const cy = vpH / 2;
+  const sqLeft = cx - half;
+  const sqTop = cy - half;
+  const sqRight = cx + half;
+  const sqBottom = cy + half;
 
   // ── Action handlers ──
 
@@ -261,11 +286,7 @@ export default function Board({ state, onAction }: BoardProps) {
 
   function handleDiscard() {
     if (selectedTile) {
-      onAction({
-        type: 'DISCARD_TILE',
-        playerIndex: HUMAN_IDX,
-        tile: selectedTile,
-      });
+      onAction({ type: 'DISCARD_TILE', playerIndex: HUMAN_IDX, tile: selectedTile });
       setSelectedIndex(null);
     }
   }
@@ -274,7 +295,6 @@ export default function Board({ state, onAction }: BoardProps) {
     onAction({ type: 'CLAIM_TILE', playerIndex: HUMAN_IDX, option });
   }
 
-  /** Human explicitly declines all claim options — advance to next draw. */
   function handlePass() {
     onAction({ type: 'DRAW_TILE' });
   }
@@ -292,7 +312,45 @@ export default function Board({ state, onAction }: BoardProps) {
         }}
       />
 
-      {/* ── ScoreBoard: top-right corner ── */}
+      {/* ── SVG lane markings overlay ── */}
+      {vpW > 0 && (
+        <svg
+          className="pointer-events-none absolute inset-0"
+          width="100%"
+          height="100%"
+        >
+          {/* Outer decorative table border */}
+          <rect
+            x={OUTER_BORDER_INSET}
+            y={OUTER_BORDER_INSET}
+            width={vpW - 2 * OUTER_BORDER_INSET}
+            height={vpH - 2 * OUTER_BORDER_INSET}
+            fill="none"
+            stroke="rgba(255,255,255,0.08)"
+            strokeWidth="1"
+            rx="3"
+          />
+
+          {/* 4 diagonal lines: play area corners → viewport corners */}
+          <line x1={0}    y1={0}    x2={sqLeft}  y2={sqTop}    stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+          <line x1={vpW}  y1={0}    x2={sqRight} y2={sqTop}    stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+          <line x1={0}    y1={vpH}  x2={sqLeft}  y2={sqBottom} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+          <line x1={vpW}  y1={vpH}  x2={sqRight} y2={sqBottom} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+
+          {/* 4 edges of the center square — slightly brighter */}
+          <rect
+            x={sqLeft}
+            y={sqTop}
+            width={PLAY_AREA_SIZE}
+            height={PLAY_AREA_SIZE}
+            fill="none"
+            stroke="rgba(255,255,255,0.2)"
+            strokeWidth="1.5"
+          />
+        </svg>
+      )}
+
+      {/* ── ScoreBoard ── */}
       <div className="absolute right-4 top-4 z-20">
         <ScoreBoard
           players={state.players}
@@ -302,15 +360,14 @@ export default function Board({ state, onAction }: BoardProps) {
         />
       </div>
 
-      {/* ── Top hand (bot, player 2) + nameplate ── */}
-      <div className="absolute left-0 right-0 top-2 z-10 flex flex-col items-center gap-1">
+      {/* ── Top hand (bot, player 2) ── */}
+      <div
+        className="absolute top-2 z-10 flex flex-col items-center gap-1"
+        style={{ left: '50%', transform: 'translateX(-50%)' }}
+      >
         <div
           className={isActive(2) ? 'animate-pulse' : ''}
-          style={
-            isActive(2)
-              ? { filter: 'drop-shadow(0 0 10px rgba(251,191,36,0.5))' }
-              : undefined
-          }
+          style={isActive(2) ? { filter: 'drop-shadow(0 0 10px rgba(251,191,36,0.5))' } : undefined}
         >
           <Hand
             tiles={state.players[2].hand}
@@ -318,22 +375,20 @@ export default function Board({ state, onAction }: BoardProps) {
             flowers={state.players[2].flowers}
             isHuman={false}
             selectedIndex={null}
+            size="md"
             position="top"
+            drawnTileId={state.phase === 'botTurn' && state.currentPlayerIndex === 2 ? state.lastDrawnTile?.id ?? null : null}
           />
         </div>
         <Nameplate name={PLAYER_NAMES[2]} wind={state.players[2].seatWind} />
       </div>
 
-      {/* ── Left hand (bot, player 3) + nameplate ── */}
+      {/* ── Left hand (bot, player 3) ── */}
       <div className="absolute left-0 top-1/2 z-10 -translate-y-1/2 flex flex-col items-center gap-1">
         <Nameplate name={PLAYER_NAMES[3]} wind={state.players[3].seatWind} />
         <div
           className={isActive(3) ? 'animate-pulse' : ''}
-          style={
-            isActive(3)
-              ? { filter: 'drop-shadow(0 0 10px rgba(251,191,36,0.5))' }
-              : undefined
-          }
+          style={isActive(3) ? { filter: 'drop-shadow(0 0 10px rgba(251,191,36,0.5))' } : undefined}
         >
           <Hand
             tiles={state.players[3].hand}
@@ -341,21 +396,19 @@ export default function Board({ state, onAction }: BoardProps) {
             flowers={state.players[3].flowers}
             isHuman={false}
             selectedIndex={null}
+            size="md"
             position="left"
+            drawnTileId={state.phase === 'botTurn' && state.currentPlayerIndex === 3 ? state.lastDrawnTile?.id ?? null : null}
           />
         </div>
       </div>
 
-      {/* ── Right hand (bot, player 1) + nameplate ── */}
+      {/* ── Right hand (bot, player 1) ── */}
       <div className="absolute right-0 top-1/2 z-10 -translate-y-1/2 flex flex-col items-center gap-1">
         <Nameplate name={PLAYER_NAMES[1]} wind={state.players[1].seatWind} />
         <div
           className={isActive(1) ? 'animate-pulse' : ''}
-          style={
-            isActive(1)
-              ? { filter: 'drop-shadow(0 0 10px rgba(251,191,36,0.5))' }
-              : undefined
-          }
+          style={isActive(1) ? { filter: 'drop-shadow(0 0 10px rgba(251,191,36,0.5))' } : undefined}
         >
           <Hand
             tiles={state.players[1].hand}
@@ -363,153 +416,207 @@ export default function Board({ state, onAction }: BoardProps) {
             flowers={state.players[1].flowers}
             isHuman={false}
             selectedIndex={null}
+            size="md"
             position="right"
+            drawnTileId={state.phase === 'botTurn' && state.currentPlayerIndex === 1 ? state.lastDrawnTile?.id ?? null : null}
           />
         </div>
       </div>
 
-      {/* ── Center play area: discard zones + wind indicator ── */}
-      <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2">
+      {/* ── Center play area: 500×500 square ── */}
+      <div
+        className="absolute z-10"
+        style={{
+          left: '50%',
+          top: '50%',
+          transform: 'translate(-50%, -50%)',
+          width: PLAY_AREA_SIZE,
+          height: PLAY_AREA_SIZE,
+        }}
+      >
+        {/* Styled square background */}
         <div
-          className="rounded-xl border border-amber-900/30 bg-black/10 p-3"
+          className="absolute inset-0 rounded-xl border border-amber-900/30 bg-black/10"
           style={{ boxShadow: 'inset 0 0 30px rgba(0,0,0,0.5)' }}
-        >
-          <div className="flex flex-col items-center gap-2">
-            {/* Top discard zone (player 2) */}
-            <div className="min-h-[52px] min-w-[224px]">
-              <DiscardPile
-                discards={playerDiscards[2]}
-                lastDiscardId={lastDiscardId}
-                playerPosition="top"
-                tenpaiDiscardIds={tenpaiDiscardIds[2]}
+        />
+
+        {/* Inner content (relative for absolute children) */}
+        <div className="relative w-full h-full">
+          {/* Top discard zone (player 2) — bottom edge adjacent to center piece, h-centered */}
+          <div
+            className="absolute"
+            style={{ position: 'absolute', bottom: `calc(50% + ${DISCARD_OFFSET}px)`, left: '50%', transform: 'translateX(-50%)' }}
+          >
+            <DiscardPile
+              discards={playerDiscards[2]}
+              lastDiscardId={stableLastDiscardId}
+              playerPosition="top"
+              tenpaiDiscardIds={tenpaiDiscardIds[2]}
+              tileSize="sm"
+              columns={6}
+              width={270}
+              height={120}
+            />
+          </div>
+
+          {/* Bottom discard zone (player 0) — top edge adjacent to center piece, h-centered */}
+          <div
+            className="absolute"
+            style={{ position: 'absolute', top: `calc(50% + ${DISCARD_OFFSET}px)`, left: '50%', transform: 'translateX(-50%)' }}
+          >
+            <DiscardPile
+              discards={playerDiscards[0]}
+              lastDiscardId={stableLastDiscardId}
+              playerPosition="bottom"
+              tenpaiDiscardIds={tenpaiDiscardIds[0]}
+              tileSize="sm"
+              columns={6}
+              width={270}
+              height={120}
+            />
+          </div>
+
+          {/* Left discard zone (player 3) — right edge adjacent to center piece, v-centered.
+              6 tiles per "row" (bottom→top from left player's POV), rows wrap leftward. */}
+          <div
+            className="absolute"
+            style={{ position: 'absolute', right: `calc(50% + ${DISCARD_OFFSET}px)`, top: '50%', transform: 'translateY(-50%)' }}
+          >
+            <DiscardPile
+              discards={playerDiscards[3]}
+              lastDiscardId={stableLastDiscardId}
+              playerPosition="left"
+              tenpaiDiscardIds={tenpaiDiscardIds[3]}
+              tileSize="sm"
+              columns={6}
+              width={180}
+              height={270}
+            />
+          </div>
+
+          {/* Right discard zone (player 1) — left edge adjacent to center piece, v-centered.
+              6 tiles per "row" (top→bottom from right player's POV), rows wrap rightward. */}
+          <div
+            className="absolute"
+            style={{ position: 'absolute', left: `calc(50% + ${DISCARD_OFFSET}px)`, top: '50%', transform: 'translateY(-50%)' }}
+          >
+            <DiscardPile
+              discards={playerDiscards[1]}
+              lastDiscardId={stableLastDiscardId}
+              playerPosition="right"
+              tenpaiDiscardIds={tenpaiDiscardIds[1]}
+              tileSize="sm"
+              columns={6}
+              width={180}
+              height={270}
+            />
+          </div>
+
+          {/* Center piece — absolutely centered, highest z-index in this area */}
+          <div
+            className="absolute rounded-lg border-2 border-amber-700/50 bg-emerald-800 shadow-lg flex flex-col items-center justify-center"
+            style={{
+              left: '50%',
+              top: '50%',
+              transform: 'translate(-50%, -50%)',
+              width: CENTER_SIZE,
+              height: CENTER_SIZE,
+              zIndex: 10,
+            }}
+          >
+            {/* SVG progress ring */}
+            <svg
+              className="pointer-events-none absolute inset-0"
+              viewBox={`0 0 ${CENTER_SIZE} ${CENTER_SIZE}`}
+              width={CENTER_SIZE}
+              height={CENTER_SIZE}
+            >
+              <circle
+                cx={RING_CENTER}
+                cy={RING_CENTER}
+                r={RING_RADIUS}
+                fill="none"
+                stroke="rgba(217,119,6,0.15)"
+                strokeWidth="4"
               />
-            </div>
-
-            {/* Middle row: left discards | center wind | right discards */}
-            <div className="flex items-center gap-3">
-              <div className="min-h-[52px] min-w-[224px]">
-                <DiscardPile
-                  discards={playerDiscards[3]}
-                  lastDiscardId={lastDiscardId}
-                  playerPosition="left"
-                  tenpaiDiscardIds={tenpaiDiscardIds[3]}
+              {state.phase === 'awaitingClaims' && (
+                <circle
+                  cx={RING_CENTER}
+                  cy={RING_CENTER}
+                  r={RING_RADIUS}
+                  fill="none"
+                  stroke={claimTimer <= 2 ? '#ef4444' : '#d97706'}
+                  strokeWidth="4"
+                  strokeLinecap="round"
+                  strokeDasharray={RING_CIRCUMFERENCE}
+                  strokeDashoffset={
+                    RING_CIRCUMFERENCE * (1 - claimTimer / CLAIM_TIMER_SECONDS)
+                  }
+                  style={{
+                    transition: 'stroke-dashoffset 1s linear, stroke 0.3s',
+                    transform: `rotate(-90deg)`,
+                    transformOrigin: `${RING_CENTER}px ${RING_CENTER}px`,
+                  }}
                 />
-              </div>
+              )}
+            </svg>
 
-              {/* Center piece: prevailing wind + compass + progress ring */}
-              <div className="relative flex h-20 w-20 flex-shrink-0 items-center justify-center rounded-lg border-2 border-amber-700/50 bg-emerald-800 shadow-lg">
-                {/* SVG progress ring (visible during awaitingClaims) */}
-                <svg
-                  className="pointer-events-none absolute inset-0"
-                  viewBox="0 0 80 80"
-                  width={80}
-                  height={80}
-                >
-                  {/* Background ring track */}
-                  <circle
-                    cx="40"
-                    cy="40"
-                    r={RING_RADIUS}
-                    fill="none"
-                    stroke="rgba(217,119,6,0.15)"
-                    strokeWidth="3"
-                  />
-                  {/* Animated countdown arc */}
-                  {state.phase === 'awaitingClaims' && (
-                    <circle
-                      cx="40"
-                      cy="40"
-                      r={RING_RADIUS}
-                      fill="none"
-                      stroke={claimTimer <= 2 ? '#ef4444' : '#d97706'}
-                      strokeWidth="3"
-                      strokeLinecap="round"
-                      strokeDasharray={RING_CIRCUMFERENCE}
-                      strokeDashoffset={
-                        RING_CIRCUMFERENCE *
-                        (1 - claimTimer / CLAIM_TIMER_SECONDS)
-                      }
-                      style={{
-                        transition: 'stroke-dashoffset 1s linear, stroke 0.3s',
-                        transform: 'rotate(-90deg)',
-                        transformOrigin: '40px 40px',
-                      }}
-                    />
-                  )}
-                </svg>
+            {/* Compass labels */}
+            <span className="absolute left-1/2 top-1 -translate-x-1/2 text-[10px] leading-none text-amber-600/35 select-none">
+              北<span className="text-[8px]">N</span>
+            </span>
+            <span className="absolute bottom-1 left-1/2 -translate-x-1/2 text-[10px] leading-none text-amber-600/35 select-none">
+              南<span className="text-[8px]">S</span>
+            </span>
+            <span className="absolute left-1 top-1/2 -translate-y-1/2 text-[10px] leading-none text-amber-600/35 select-none">
+              西<span className="text-[8px]">W</span>
+            </span>
+            <span className="absolute right-1 top-1/2 -translate-y-1/2 text-[10px] leading-none text-amber-600/35 select-none">
+              東<span className="text-[8px]">E</span>
+            </span>
 
-                {/* Compass labels: N/S/E/W */}
-                <span className="absolute left-1/2 top-0.5 -translate-x-1/2 text-[10px] leading-none text-amber-600/40">
-                  北<span className="text-[8px]">N</span>
-                </span>
-                <span className="absolute bottom-0.5 left-1/2 -translate-x-1/2 text-[10px] leading-none text-amber-600/40">
-                  南<span className="text-[8px]">S</span>
-                </span>
-                <span className="absolute left-0.5 top-1/2 -translate-y-1/2 text-[10px] leading-none text-amber-600/40">
-                  西<span className="text-[8px]">W</span>
-                </span>
-                <span className="absolute right-0.5 top-1/2 -translate-y-1/2 text-[10px] leading-none text-amber-600/40">
-                  東<span className="text-[8px]">E</span>
-                </span>
+            {/* Prevailing wind */}
+            <span className="text-base font-bold text-amber-500/70 leading-none mb-1 select-none">
+              {WIND_LABEL[state.prevailingWind]}
+            </span>
 
-                {/* Prevailing wind character */}
-                <span className="text-2xl font-bold text-amber-400">
-                  {WIND_LABEL[state.prevailingWind]}
-                </span>
+            {/* Live wall count */}
+            <span
+              className="font-bold tabular-nums leading-none select-none"
+              style={{
+                fontSize: '52px',
+                color: state.liveWall.length <= 4 ? '#ef4444' : '#fff',
+              }}
+            >
+              {state.liveWall.length}
+            </span>
 
-                {/* Timer seconds (visible during awaitingClaims) */}
-                {state.phase === 'awaitingClaims' && (
-                  <span
-                    className={[
-                      'absolute bottom-1 right-1 text-[10px] font-bold tabular-nums',
-                      claimTimer <= 2
-                        ? 'text-red-400'
-                        : 'text-amber-400/60',
-                    ].join(' ')}
-                  >
-                    {claimTimer}
-                  </span>
-                )}
-              </div>
-
-              <div className="min-h-[52px] min-w-[224px]">
-                <DiscardPile
-                  discards={playerDiscards[1]}
-                  lastDiscardId={lastDiscardId}
-                  playerPosition="right"
-                  tenpaiDiscardIds={tenpaiDiscardIds[1]}
-                />
-              </div>
-            </div>
-
-            {/* Bottom discard zone (player 0 / human) */}
-            <div className="min-h-[52px] min-w-[224px]">
-              <DiscardPile
-                discards={playerDiscards[0]}
-                lastDiscardId={lastDiscardId}
-                playerPosition="bottom"
-                tenpaiDiscardIds={tenpaiDiscardIds[0]}
-              />
-            </div>
+            {/* Label */}
+            <span className="mt-1 text-[11px] text-amber-200/40 leading-none select-none">
+              tiles left · 剩餘
+            </span>
           </div>
         </div>
       </div>
 
-      {/* ── Bottom area: "Your Turn" + ActionBar + nameplate + Human hand ── */}
+      {/* ── Bottom area: ActionBar + nameplate + Human hand ── */}
       <div className="absolute bottom-2 left-0 right-0 flex flex-col items-center gap-1.5">
         {isHumanTurn && (
           <span className="animate-pulse text-sm font-bold text-amber-400">
             Your Turn
           </span>
         )}
-        <ActionBar
-          options={claimOptions}
-          onAction={handleClaim}
-          onDiscard={handleDiscard}
-          onPass={claimOptions.length > 0 ? handlePass : undefined}
-          canDiscard={canDiscard}
-          selectedTile={selectedTile ?? null}
-        />
+        {/* ActionBar: positioned slightly right of center, above the hand (like reference) */}
+        <div className="w-full max-w-2xl">
+          <ActionBar
+            options={claimOptions}
+            onAction={handleClaim}
+            onDiscard={handleDiscard}
+            onPass={claimOptions.length > 0 ? handlePass : undefined}
+            canDiscard={canDiscard}
+            selectedTile={selectedTile ?? null}
+          />
+        </div>
         <Nameplate name={PLAYER_NAMES[0]} wind={human.seatWind} />
         <div
           style={
@@ -527,9 +634,22 @@ export default function Board({ state, onAction }: BoardProps) {
             onTileClick={handleTileClick}
             size="lg"
             position="bottom"
+            drawnTileId={state.phase === 'playerTurn' && state.currentPlayerIndex === HUMAN_IDX ? state.lastDrawnTile?.id ?? null : null}
           />
         </div>
       </div>
+
+      {/* ── Win / Draw overlay ── */}
+      {state.phase === 'roundOver' && (
+        <WinScreen
+          winnerIndex={state.winner}
+          playerNames={PLAYER_NAMES}
+          isSelfDraw={state.lastDiscardPlayerIndex === null}
+          taiBreakdown={state.lastTaiBreakdown}
+          onNextRound={() => onAction({ type: 'NEXT_ROUND' })}
+          onNewGame={() => onAction({ type: 'RESET_GAME' })}
+        />
+      )}
     </div>
   );
 }

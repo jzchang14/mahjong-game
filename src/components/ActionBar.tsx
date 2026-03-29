@@ -36,6 +36,14 @@ const CLAIM_LABELS: Record<ClaimOption['type'], string> = {
   chow: '吃 Chow',
 };
 
+/** Button colors per claim type — inspired by mahjongo.com reference. */
+const CLAIM_COLORS: Record<ClaimOption['type'], { bg: string; hover: string }> = {
+  hu: { bg: 'bg-red-500', hover: 'hover:bg-red-400' },
+  kong: { bg: 'bg-amber-600', hover: 'hover:bg-amber-500' },
+  pong: { bg: 'bg-blue-600', hover: 'hover:bg-blue-500' },
+  chow: { bg: 'bg-emerald-600', hover: 'hover:bg-emerald-500' },
+};
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -52,22 +60,21 @@ export default function ActionBar({
   if (!hasAnything) return null;
 
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-gray-900/80 px-4 py-2 backdrop-blur-sm">
-      {/* Claim buttons — only for options present in the array */}
+    <div className="flex items-center justify-end gap-3 pr-4">
+      {/* Claim buttons — large, colored, matching reference style */}
       {CLAIM_ORDER.map((type) => {
         const option = options.find((o) => o.type === type);
         if (!option) return null;
 
-        const isHu = type === 'hu';
+        const colors = CLAIM_COLORS[type];
         return (
           <button
             key={type}
             onClick={() => onAction(option)}
             className={[
-              'rounded-md px-4 py-2 text-sm font-bold transition-colors',
-              isHu
-                ? 'bg-amber-500 text-white hover:bg-amber-400'
-                : 'bg-gray-600 text-gray-100 hover:bg-gray-500',
+              'rounded-lg px-8 py-3 text-lg font-bold text-white shadow-lg transition-colors',
+              colors.bg,
+              colors.hover,
             ].join(' ')}
           >
             {CLAIM_LABELS[type]}
@@ -75,23 +82,23 @@ export default function ActionBar({
         );
       })}
 
-      {/* Pass button — decline all claims */}
+      {/* Pass / Skip button — large gray to match reference */}
       {onPass && options.length > 0 && (
         <button
           onClick={onPass}
-          className="rounded-md bg-gray-600 px-4 py-2 text-sm font-bold text-gray-100 transition-colors hover:bg-gray-500"
+          className="rounded-lg bg-gray-500 px-8 py-3 text-lg font-bold text-white shadow-lg transition-colors hover:bg-gray-400"
         >
-          過 Pass
+          過 Skip
         </button>
       )}
 
-      {/* Discard button — only when it's the human's turn */}
+      {/* Discard button */}
       {canDiscard && (
         <button
           onClick={onDiscard}
           disabled={selectedTile === null}
           className={[
-            'rounded-md px-4 py-2 text-sm font-bold transition-colors',
+            'rounded-lg px-8 py-3 text-lg font-bold shadow-lg transition-colors',
             selectedTile !== null
               ? 'bg-red-600 text-white hover:bg-red-500'
               : 'cursor-not-allowed bg-gray-700 text-gray-500',
