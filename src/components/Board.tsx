@@ -31,6 +31,10 @@ type BoardProps = {
 const HUMAN_IDX = 0;
 const PLAYER_COUNT = 4;
 
+/** Reference resolution the layout is designed for. */
+const DESIGN_W = 1920;
+const DESIGN_H = 1080;
+
 /** Side length of the square center play area (px). */
 const PLAY_AREA_SIZE = 900;
 
@@ -142,6 +146,13 @@ export default function Board({ state, onAction }: BoardProps) {
     window.addEventListener('resize', update);
     return () => window.removeEventListener('resize', update);
   }, []);
+
+  // ── Responsive scale factor ──
+  // The board layout is designed for DESIGN_W × DESIGN_H. On smaller screens
+  // we uniformly scale the entire board down so everything fits.
+  const boardScale = vpW > 0 && vpH > 0
+    ? Math.min(vpW / DESIGN_W, vpH / DESIGN_H, 1)
+    : 1;
 
   const human = state.players[HUMAN_IDX];
 
@@ -271,8 +282,8 @@ export default function Board({ state, onAction }: BoardProps) {
 
   // ── SVG lane markings — derived from viewport + play area geometry ──
   const half = PLAY_AREA_SIZE / 2;
-  const cx = vpW / 2;
-  const cy = vpH / 2;
+  const cx = DESIGN_W / 2;
+  const cy = DESIGN_H / 2;
   const sqLeft = cx - half;
   const sqTop = cy - half;
   const sqRight = cx + half;
@@ -302,7 +313,18 @@ export default function Board({ state, onAction }: BoardProps) {
   // ── Render ──
 
   return (
-    <div className="relative h-screen w-full overflow-hidden bg-emerald-900">
+    <div className="relative flex h-screen w-full items-start justify-center overflow-hidden bg-emerald-900">
+      {/* ── Scaled board wrapper ── */}
+      <div
+        style={{
+          width: `${DESIGN_W}px`,
+          height: `${DESIGN_H}px`,
+          transform: `scale(${boardScale})`,
+          transformOrigin: 'top center',
+          position: 'relative',
+          flexShrink: 0,
+        }}
+      >
       {/* ── Felt texture overlay ── */}
       <div
         className="pointer-events-none absolute inset-0"
@@ -313,7 +335,7 @@ export default function Board({ state, onAction }: BoardProps) {
       />
 
       {/* ── SVG lane markings overlay ── */}
-      {vpW > 0 && (
+      {boardScale > 0 && (
         <svg
           className="pointer-events-none absolute inset-0"
           width="100%"
@@ -323,8 +345,8 @@ export default function Board({ state, onAction }: BoardProps) {
           <rect
             x={OUTER_BORDER_INSET}
             y={OUTER_BORDER_INSET}
-            width={vpW - 2 * OUTER_BORDER_INSET}
-            height={vpH - 2 * OUTER_BORDER_INSET}
+            width={DESIGN_W - 2 * OUTER_BORDER_INSET}
+            height={DESIGN_H - 2 * OUTER_BORDER_INSET}
             fill="none"
             stroke="rgba(255,255,255,0.08)"
             strokeWidth="1"
@@ -333,9 +355,9 @@ export default function Board({ state, onAction }: BoardProps) {
 
           {/* 4 diagonal lines: play area corners → viewport corners */}
           <line x1={0}    y1={0}    x2={sqLeft}  y2={sqTop}    stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
-          <line x1={vpW}  y1={0}    x2={sqRight} y2={sqTop}    stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
-          <line x1={0}    y1={vpH}  x2={sqLeft}  y2={sqBottom} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
-          <line x1={vpW}  y1={vpH}  x2={sqRight} y2={sqBottom} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+          <line x1={DESIGN_W} y1={0}         x2={sqRight} y2={sqTop}    stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+          <line x1={0}       y1={DESIGN_H}  x2={sqLeft}  y2={sqBottom} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
+          <line x1={DESIGN_W} y1={DESIGN_H} x2={sqRight} y2={sqBottom} stroke="rgba(255,255,255,0.12)" strokeWidth="1" />
 
           {/* 4 edges of the center square — slightly brighter */}
           <rect
@@ -650,6 +672,7 @@ export default function Board({ state, onAction }: BoardProps) {
           onNewGame={() => onAction({ type: 'RESET_GAME' })}
         />
       )}
+      </div>{/* end scaled board wrapper */}
     </div>
   );
 }
